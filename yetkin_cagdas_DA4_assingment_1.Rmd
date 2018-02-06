@@ -37,6 +37,11 @@ data <- fread("airbnb_london_workfile.csv", stringsAsFactors = TRUE)
 
 data[, neighbourhood_cleansed := NULL]
 data[, neighbourhood_cleansed := NULL]
+data[, cancellation_policy := NULL]
+data[, price := NULL]
+data[, property_type := NULL]
+data[, room_type := NULL]
+
 names(data)
 glimpse(data)
 data[, usd_price_day := as.numeric(usd_price_day)]
@@ -56,7 +61,7 @@ sapply(data, function(x) if (class(x) == 'factor') {unique(x)
 
 ```{r}
 #convert to numeric
-#Transform the variable YearsProgram to numeric (in order to capture the order of the intervals)
+#Transform the variable n_accommodates to numeric (in order to capture the order of the intervals)
 data <- data[, n_accommodates := as.numeric(as.character(n_accommodates))]
 cat('# rows with missing values for the n_accommodates variable: ', sum(is.na(data$n_accommodates)))
 ```
@@ -79,12 +84,181 @@ ggplot(data = data) +
 
 
 ```{r}
-## Distribution of salaries by gender
+## Distribution of price by room type
 ggplot(data, aes(usd_price_day, fill = f_room_type)) + 
   geom_density(alpha = 0.3) + theme_fivethirtyeight()
 ```
-Van Gogh or Rob Ross? 
+Van Gogh or Rob Ross? These room types are totally different animals. Lets look at their boxplots.
 
+```{r}
+skim(data$usd_price_day)
+```
+
+```{r}
+summary(data$usd_price_day)
+```
+```{r}
+## Boxplot of price by room type
+ggplot(data, aes(f_room_type, usd_price_day)) + geom_boxplot()+ theme_fivethirtyeight()
+
+```
+
+Now time to forget about entire London and select a random district...
+
+
+```{r}
+#a dplyr way...
+set.seed(22) #reproduce
+selection_table <- data %>%
+                      group_by(f_neighbourhood_cleansed) %>%
+                      tally() %>%
+                      filter(n > 1000) %>%
+                      arrange(desc(n))
+
+
+lottery_winner <- as.vector(sample(selection_table$f_neighbourhood_cleansed, 1))
+lottery_winner
+```
+
+Hello My District...
+
+```{r}
+district <- data %>%
+              filter(f_neighbourhood_cleansed == lottery_winner)
+
+```
+
+```{r}
+## Distribution of price by room type
+ggplot(district, aes(usd_price_day, fill = f_room_type)) + 
+  geom_density(alpha = 0.3) + theme_fivethirtyeight()
+```
+Its a kind of similar to entire London actually.
+
+```{r}
+skim(district$usd_price_day)
+```
+```{r}
+summary(district$usd_price_day)
+```
+
+
+```{r}
+ggplot(district, aes(x = factor(n_accommodates), y = usd_price_day, fill = factor(f_property_type))) +
+        geom_boxplot(alpha=0.8) +
+        scale_x_discrete(name = "Accomodate Persons") +
+        ggtitle("Price Per Day") + theme_fivethirtyeight() + scale_fill_grey()
+```
+```{r}
+names(district)
+```
+
+
+```{r}
+sapply(district, function(x) sum(is.na(x)))
+```
+
+```{r, fig.width=5,fig.height=3}
+## Distribution of salaries
+ggplot(district, aes(usd_price_day)) + geom_histogram()
+#ggplot(district, aes(log(usd_price_day))) + geom_histogram()
+#ggplot(district, aes(usd_price_day, usd_cleaning_fee)) + geom_point()
+#ggplot(district, aes(p_host_response_rate, usd_price_day)) + geom_point()
+#ggplot(district, aes(n_accommodates, usd_price_day)) + geom_point() + geom_jitter()
+#ggplot(district, aes(n_bathrooms, usd_price_day)) + geom_point()+ geom_jitter()
+#ggplot(district, aes(n_review_scores_rating, usd_price_day)) + geom_point()
+#ggplot(district, aes(n_number_of_reviews, usd_price_day)) + geom_point()
+
+```
+```{r, fig.width=5,fig.height=3}
+#The most importand dummy variables will be plotted this way
+#https://sakaluk.wordpress.com/2015/08/27/6-make-it-pretty-plotting-2-way-interactions-with-ggplot2/
+
+library(psych)
+dist_stats <- describeBy(district$usd_price_day,list(district$f_room_type,district$d_familykidfriendly), mat=TRUE,digits=2)
+
+dist_stats$se = dist_stats$sd/sqrt(dist_stats$n)
+
+names(dist_stats)[names(dist_stats) == 'group1'] = 'Type'
+names(dist_stats)[names(dist_stats) == 'group2'] = 'KidFriendly'
+
+
+limits = aes(ymax = mean + (1.96*se), ymin=mean - (1.96*se))
+dodge = position_dodge(width=0.9)
+
+ggplot(dist_stats, aes(x = Type, y = mean, fill = KidFriendly))+
+  geom_bar(stat='identity', position=dodge)+
+  geom_errorbar(limits, position=dodge, width=0.25)+
+  ylab('Mean Price')+
+  theme_fivethirtyeight() +
+  scale_fill_grey()
+
+
+```
+
+Partitioning the data to 70% training and 30% test samples.
+
+```{r}
+london <- data
+```
+
+```{r}
+set.seed(123)
+my_ratio <- 0.7
+
+#First for the entire London
+train_indices_london <- createDataPartition(y = london[["usd_price_day"]],
+                                     times = 1,
+                                     p = my_ratio,
+                                     list = FALSE)
+
+data_train_london <- london[train_indices_london, ]
+data_test_london  <- london[-train_indices_london, ]
+
+#Now for the selected district
+set.seed(123)
+train_indices_district <- createDataPartition(y = district[["usd_price_day"]],
+                                     times = 1,
+                                     p = my_ratio,
+                                     list = FALSE)
+
+data_train_district <- district[train_indices_district, ]
+data_test_district  <- district[-train_indices_district, ]
+
+```
+
+```{r}
+train_control <- trainControl(method = "cv", number = 10)
+tune_grid <- data.frame("cp" = c(0.01, 0.001, 0.0001, 0.00001))
+```
+
+```{r}
+# Linear 1
+
+set.seed(1234) #for reproducibility
+model_1_london <- train(usd_price_day ~ n_accommodates, 
+                   data = data_train_london, 
+                   method = "lm", 
+                   trControl = train_control)
+#model_1_london$results[["RMSE"]]
+
+set.seed(1234) #for reproducibility
+model_1_district <- train(usd_price_day ~ n_accommodates, 
+                   data = data_train_district, 
+                   method = "lm", 
+                   trControl = train_control)
+#model_1_district$results[["RMSE"]]
+
+```
+
+
+```{r}
+resamps <- resamples(list("model_1_london" = model_1_london,
+                          "model_1_district" = model_1_district))
+summary(resamps[['values']]$`model_1_london~Rsquared`)
+```
+
+############### Code From Machine Learning Class ##################################
 
 ```{r}
 data[, age_cat := cut(age, .(-Inf,20,35,65,Inf), labels = c('Kids','Young','Middle','Old'))]
