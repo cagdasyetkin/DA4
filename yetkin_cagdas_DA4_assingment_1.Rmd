@@ -18,6 +18,8 @@ In this task we are going to predict ..............
 
 
 ```{r message=FALSE, warning=FALSE}
+
+library(doParallel)
 library(ggplot2)
 library(data.table)
 library(caret)
@@ -26,7 +28,11 @@ library(ROCR)
 library(dplyr)
 library(ggthemes)
 library(skimr)
-theme_set(theme_bw())
+library(gridExtra)
+library(stargazer)
+
+registerDoParallel(cores = 4)
+
 ```
 
 ## 1. 
@@ -35,73 +41,234 @@ theme_set(theme_bw())
 
 data <- fread("airbnb_london_workfile.csv", stringsAsFactors = TRUE)
 
+data[, c("neighbourhood_cleansed", "cancellation_policy", 
+         "price", "property_type", "room_type")  := NULL]
+
 data[, neighbourhood_cleansed := NULL]
-data[, neighbourhood_cleansed := NULL]
-data[, cancellation_policy := NULL]
-data[, price := NULL]
-data[, property_type := NULL]
-data[, room_type := NULL]
 
 names(data)
-glimpse(data)
 data[, usd_price_day := as.numeric(usd_price_day)]
 
 ```
 
 Explore 
+```{r}
+glimpse(data)
+```
+
+I tried PCA exploration to reduce dimentions but it was not useful: 80% of the variation was captured by 50 variables.
+
+
+convert dummies to factor
+
+```{r}
+#dummies <- names(data)[grep("^d_.*",names(data))]
+
+#setDT(data)[, (dummies):= lapply(.SD, factor), .SDcols=dummies]
+
+```
 
 ```{r}
 sapply(data, function(x) sum(is.na(x)))
 ```
 
+I have 6-7 observations with strange prices such as 1, 2, 5 usd. I will drop them.
+
+```{r}
+data <- data[data$usd_price_day > 10, ]
+```
+
+
+```{r}
+data[, usd_cleaning_fee := 
+       ifelse(is.na(usd_cleaning_fee), 0, usd_cleaning_fee)]
+skim(data$usd_cleaning_fee)
+```
+```{r}
+data[, n_bathrooms := 
+       ifelse(is.na(n_bathrooms), median(n_bathrooms, na.rm = T), n_bathrooms)]
+skim(data$n_bathrooms)
+```
+
+```{r}
+data[, n_beds := 
+       ifelse(is.na(n_beds), n_accommodates, n_beds)]
+skim(data$n_beds)
+```
+
+dont impute the other NAs.
+
+study your variables:
+
+
 ```{r}
 sapply(data, function(x) if (class(x) == 'factor') {unique(x)
   } else if (class(x) != 'factor') {summary(x)})
 ```
+How does my price behave? Are my missing observations missing at random?
 
 ```{r}
 #convert to numeric
 #Transform the variable n_accommodates to numeric (in order to capture the order of the intervals)
 data <- data[, n_accommodates := as.numeric(as.character(n_accommodates))]
-cat('# rows with missing values for the n_accommodates variable: ', sum(is.na(data$n_accommodates)))
 ```
 
 ```{r}
-ggplot(data, aes(x = factor(n_accommodates), y = usd_price_day, fill = factor(f_property_type))) +
-        geom_boxplot(alpha=0.8) +
-        scale_x_discrete(name = "Accomodate Persons") +
-        ggtitle("Price Per Day") + theme_fivethirtyeight() + scale_fill_grey()
-```
 
-```{r}
-ggplot(data = data) +
-  geom_bar(data = data,
-           aes(x = factor(n_accommodates),
-               color = f_room_type, fill = f_room_type)) +
-  ggtitle("# Accomodations per room type in different property types") +
-  xlab('Accommodates') + theme_fivethirtyeight()
-```
+plot1 <- ggplot(data, aes(x = factor(n_accommodates), y = usd_price_day, fill = factor(f_property_type))) +
+         geom_boxplot(alpha=0.8) +
+         scale_x_discrete(name = "Accomodate Persons") +
+         ggtitle("Price Per Accommodate") + theme_fivethirtyeight()
 
+plot2 <- ggplot(data = data) +
+         geom_bar(data = data,
+         aes(x = factor(n_accommodates),
+         color = f_room_type, fill = f_room_type)) +
+         ggtitle("Accomodations and property types") +
+         xlab('Accommodates') + theme_fivethirtyeight()
+
+grid.arrange(plot1, plot2, nrow=2)
+```
 
 ```{r}
 ## Distribution of price by room type
-ggplot(data, aes(usd_price_day, fill = f_room_type)) + 
-  geom_density(alpha = 0.3) + theme_fivethirtyeight()
+plot3 <- ggplot(data, aes(usd_price_day, fill = f_room_type)) + 
+         ggtitle("Density, Price by Type") +
+         geom_density(alpha = 0.3) + theme_fivethirtyeight()
+
+## Boxplot of price by room type
+plot4 <- ggplot(data, aes(f_room_type, usd_price_day)) + 
+         ggtitle("Price by Type") +
+         geom_boxplot()+ theme_fivethirtyeight()
+
+grid.arrange(plot3, plot4, ncol=2)
 ```
-Van Gogh or Rob Ross? These room types are totally different animals. Lets look at their boxplots.
+These room types are totally different animals. Lets look at their boxplots.
 
 ```{r}
 skim(data$usd_price_day)
 ```
 
+now see the missing observations
+
 ```{r}
-summary(data$usd_price_day)
-```
-```{r}
+## Distribution of price by room type for missing reviews
+plot5 <- ggplot(data[is.na(n_reviews_per_month)], aes(usd_price_day, fill = f_room_type)) + 
+         ggtitle("Missing Review") +
+         geom_density(alpha = 0.3) + theme_fivethirtyeight()
+
 ## Boxplot of price by room type
-ggplot(data, aes(f_room_type, usd_price_day)) + geom_boxplot()+ theme_fivethirtyeight()
+plot6 <- ggplot(data[is.na(n_reviews_per_month)], aes(f_room_type, usd_price_day)) + 
+         ggtitle("Missing Review") +
+         geom_boxplot()+ theme_fivethirtyeight()
+
+grid.arrange(plot5, plot6, ncol=2)
+```
+
+```{r}
+## Distribution of price by room type for missing reviews
+skim(data[is.na(n_reviews_per_month), ]$usd_price_day)
+```
+
+```{r}
+## Distribution of price by room type for missing reviews
+plot7 <- ggplot(data[is.na(n_review_scores_rating)], aes(usd_price_day, fill = f_room_type)) + 
+         ggtitle("Missing Review Score") +
+         geom_density(alpha = 0.3) + theme_fivethirtyeight()
+
+## Boxplot of price by room type
+plot8 <- ggplot(data[is.na(n_review_scores_rating)], aes(f_room_type, usd_price_day)) + 
+         ggtitle("Missing Review Score") +
+         geom_boxplot()+ theme_fivethirtyeight()
+
+grid.arrange(plot7, plot8, ncol=2)
+```
+
+```{r}
+## Distribution of price by room type for it
+skim(data[is.na(n_review_scores_rating), ]$usd_price_day)
+```
+
+```{r}
+## Distribution of price by room type for host response rate
+skim(data[is.na(p_host_response_rate), ]$usd_price_day)
+```
+
+Missing values seem to be missing at random. However, I will tabulate the missing values further and see if they are missing at random:
+
+```{r, include=FALSE}
+data[is.na(n_review_scores_rating), .(Tally = .N,
+                                      AvgPrc = mean(usd_price_day)),
+     
+     keyby = f_neighbourhood_cleansed][order(-Tally)]
+  
+```
+
+
+```{r, include=FALSE}
+data[!is.na(n_review_scores_rating), .(Tally = .N,
+                                      AvgPrc = mean(usd_price_day)),
+     
+     keyby = f_neighbourhood_cleansed][order(-Tally)]
+  
+```
+
+```{r, include=FALSE}
+data[is.na(n_review_scores_rating), .(Tally = .N,
+                                      AvgPrc = mean(usd_price_day)),
+     
+     keyby = f_room_type][order(-Tally)]
+```
+
+```{r, include=FALSE}
+data[!is.na(n_review_scores_rating), .(Tally = .N,
+                                      AvgPrc = mean(usd_price_day)),
+     
+     keyby = f_room_type][order(-Tally)]
+```
+
+```{r, include=FALSE}
+data[is.na(n_review_scores_rating), .(Tally = .N,
+                                      AvgPrc = mean(usd_price_day)),
+     
+     keyby = f_property_type][order(-Tally)]
+```
+```{r, include=FALSE}
+data[!is.na(n_review_scores_rating), .(Tally = .N,
+                                      AvgPrc = mean(usd_price_day)),
+     
+     keyby = f_property_type][order(-Tally)]
+```
+
+```{r, include=FALSE}
+data[is.na(n_review_scores_rating), .(Tally = .N,
+                                      AvgPrc = mean(usd_price_day)),
+     
+     keyby = n_accommodates][order(-Tally)]
+```
+```{r, include=FALSE}
+data[!is.na(n_review_scores_rating), .(Tally = .N,
+                                      AvgPrc = mean(usd_price_day)),
+     
+     keyby = n_accommodates][order(-Tally)]
+```
+
+
+
+We can see that missing observations for these variables are following the overall price distribution.
+We will drop these values with missing observation.
+
+```{r}
+data <- data %>%
+          filter(!is.na(p_host_response_rate)) %>%
+          filter(!is.na(n_review_scores_rating)) %>%
+          filter(!is.na(n_reviews_per_month)) %>%
+          filter(!is.na(n_days_since))
+
+data <- data[complete.cases(data),]
 
 ```
+
 
 Now time to forget about entire London and select a random district...
 
@@ -138,29 +305,24 @@ Its a kind of similar to entire London actually.
 ```{r}
 skim(district$usd_price_day)
 ```
-```{r}
-summary(district$usd_price_day)
-```
+
 
 
 ```{r}
 ggplot(district, aes(x = factor(n_accommodates), y = usd_price_day, fill = factor(f_property_type))) +
         geom_boxplot(alpha=0.8) +
         scale_x_discrete(name = "Accomodate Persons") +
-        ggtitle("Price Per Day") + theme_fivethirtyeight() + scale_fill_grey()
+        ggtitle("Price per Accoomodate") + theme_fivethirtyeight()
 ```
 ```{r}
 names(district)
 ```
 
-
-```{r}
-sapply(district, function(x) sum(is.na(x)))
-```
+These prices are not log normal. I will not use log price.
 
 ```{r, fig.width=5,fig.height=3}
 ## Distribution of salaries
-ggplot(district, aes(usd_price_day)) + geom_histogram()
+#ggplot(district, aes(usd_price_day)) + geom_histogram()
 #ggplot(district, aes(log(usd_price_day))) + geom_histogram()
 #ggplot(district, aes(usd_price_day, usd_cleaning_fee)) + geom_point()
 #ggplot(district, aes(p_host_response_rate, usd_price_day)) + geom_point()
@@ -170,7 +332,8 @@ ggplot(district, aes(usd_price_day)) + geom_histogram()
 #ggplot(district, aes(n_number_of_reviews, usd_price_day)) + geom_point()
 
 ```
-```{r, fig.width=5,fig.height=3}
+
+```{r, fig.width=5,fig.height=2, message=FALSE, warning=FALSE}
 #The most importand dummy variables will be plotted this way
 #https://sakaluk.wordpress.com/2015/08/27/6-make-it-pretty-plotting-2-way-interactions-with-ggplot2/
 
@@ -186,27 +349,69 @@ names(dist_stats)[names(dist_stats) == 'group2'] = 'KidFriendly'
 limits = aes(ymax = mean + (1.96*se), ymin=mean - (1.96*se))
 dodge = position_dodge(width=0.9)
 
-ggplot(dist_stats, aes(x = Type, y = mean, fill = KidFriendly))+
+apatheme=theme_bw()+
+  theme(panel.grid.major=element_blank(),
+        panel.grid.minor=element_blank(),
+        panel.border=element_blank(),
+        axis.line=element_line())
+
+p1 <- ggplot(dist_stats, aes(x = Type, y = mean, fill = KidFriendly))+
   geom_bar(stat='identity', position=dodge)+
   geom_errorbar(limits, position=dodge, width=0.25)+
   ylab('Mean Price')+
-  theme_fivethirtyeight() +
+  theme_fivethirtyeight() + apatheme +
   scale_fill_grey()
+p1
 
+#library(gridExtra)
+#plot1 <- qplot(iris$Sepal.Length)
+#plot2 <- qplot(iris$Sepal.Width)
+#grid.arrange(plot1, plot2, ncol=2)
 
 ```
-
-Partitioning the data to 70% training and 30% test samples.
 
 ```{r}
 london <- data
 ```
 
+Run a Random Forest to entire London to see what it shows
+
 ```{r}
-set.seed(123)
+# Fit random forest: model
+
+RFtrainControl <- trainControl(method = "cv", 
+                               number = 3, 
+                               verboseIter = TRUE)
+set.seed(1234)
+RFmodel <- train(
+  usd_price_day ~ .,
+  tuneLength = 2,
+  data = district, 
+  method = 'ranger',
+  #tuneGrid = data.frame(mtry = c(2, 20, 40, 60)),
+  importance = 'impurity',
+  trControl = RFtrainControl)
+
+RFmodel
+```
+
+```{r}
+names(RFmodel$modelInfo)
+varImp(RFmodel)
+```
+
+These seem to be my most important variables. I will try them in my linear models.
+
+
+Partitioning the data to 70% training and 30% test samples.
+
+
+```{r}
+
 my_ratio <- 0.7
 
 #First for the entire London
+set.seed(123)
 train_indices_london <- createDataPartition(y = london[["usd_price_day"]],
                                      times = 1,
                                      p = my_ratio,
@@ -229,20 +434,20 @@ data_test_district  <- district[-train_indices_district, ]
 
 ```{r}
 train_control <- trainControl(method = "cv", number = 10)
-tune_grid <- data.frame("cp" = c(0.01, 0.001, 0.0001, 0.00001))
+#tune_grid <- data.frame("cp" = c(0.01, 0.001, 0.0001, 0.00001))
 ```
 
 ```{r}
 # Linear 1
 
-set.seed(1234) #for reproducibility
+set.seed(1234) 
 model_1_london <- train(usd_price_day ~ n_accommodates, 
                    data = data_train_london, 
                    method = "lm", 
                    trControl = train_control)
-#model_1_london$results[["RMSE"]]
+model_1_london$results[["RMSE"]]
 
-set.seed(1234) #for reproducibility
+set.seed(1234) 
 model_1_district <- train(usd_price_day ~ n_accommodates, 
                    data = data_train_district, 
                    method = "lm", 
@@ -251,12 +456,187 @@ model_1_district <- train(usd_price_day ~ n_accommodates,
 
 ```
 
-
 ```{r}
 resamps <- resamples(list("model_1_london" = model_1_london,
                           "model_1_district" = model_1_district))
-summary(resamps[['values']]$`model_1_london~Rsquared`)
+summary(resamps)
+
 ```
+
+
+they are performing almost the same on test sets:
+
+```{r}
+#postResample(data_test_district$usd_price_day, predict(model_1_district, data_test_district))
+#postResample(data_test_london$usd_price_day, predict(model_1_london, data_test_london))
+test_prediction_district <- predict.train(model_1_district, newdata = data_test_district)
+
+test_prediction_london <- predict.train(model_1_london, newdata = data_test_london)
+
+cat('District RMSE: ', RMSE(test_prediction_district, data_test_district[["usd_price_day"]]),
+    'London RMSE: ',   RMSE(test_prediction_london, data_test_london[["usd_price_day"]]))
+
+
+```
+
+
+```{r}
+# Linear 2
+
+#sapply(data_train_london, function(x) sum(is.na(x)))
+
+
+set.seed(1234) 
+model_2_london <- train(usd_price_day ~ n_accommodates + f_room_type + n_beds + n_bathrooms +
+                          f_property_type + f_bed_type + d_familykidfriendly, 
+                   data = data_train_london, 
+                   method = "lm", 
+                   trControl = train_control)
+                   #preProcess=c("center", "scale"))
+#model_1_london$results[["RMSE"]]
+
+set.seed(1234)
+model_2_district <- train(usd_price_day ~ n_accommodates + f_room_type + n_beds + n_bathrooms +
+                          f_property_type + f_bed_type + d_familykidfriendly, 
+                   data = data_train_district,
+                   method = "lm", 
+                   trControl = train_control)
+                   #preProcess=c("center", "scale"))
+#model_1_district$results[["RMSE"]]
+
+```
+
+
+```{r}
+resamps <- resamples(list("model_2_london" = model_2_london,
+                          "model_2_district" = model_2_district))
+summary(resamps)
+
+```
+
+they are performing almost the same on test sets:
+
+```{r}
+#postResample(data_test_district$usd_price_day, predict(model_1_district, data_test_district))
+#postResample(data_test_london$usd_price_day, predict(model_1_london, data_test_london))
+test_prediction_district <- predict.train(model_2_district, newdata = data_test_district)
+
+test_prediction_london <- predict.train(model_2_london, newdata = data_test_london)
+
+cat('District RMSE: ', RMSE(test_prediction_district, data_test_district[["usd_price_day"]]),
+    'London RMSE: ',   RMSE(test_prediction_london, data_test_london[["usd_price_day"]]))
+
+
+```
+
+
+```{r}
+# Linear 3
+
+# Factor values
+#X1  <- c("f_room_type*f_property_type",  "n_number_of_reviews*f_property_type") 
+# Interactions of factors and dummies
+#X2  <- c("d_airconditioning*f_property_type", "d_cats*f_property_type", "d_dogs*f_property_type") 
+
+set.seed(1234) 
+model_3_london <- train(usd_price_day ~ n_accommodates + f_room_type + n_beds + n_bathrooms +
+                          f_property_type + f_bed_type + d_familykidfriendly + 
+                          f_room_type*f_property_type +  n_number_of_reviews*f_property_type +
+                          d_airconditioning*f_property_type + 
+                          d_cats*f_property_type + d_dogs*f_property_type +
+                          d_familykidfriendly*f_property_type,
+                   data = data_train_london, 
+                   method = "lm", 
+                   trControl = train_control)
+                   #preProcess=c("center", "scale"))
+#model_1_london$results[["RMSE"]]
+
+set.seed(1234)
+model_3_district <- train(usd_price_day ~ n_accommodates + f_room_type + n_beds + n_bathrooms +
+                          f_property_type + f_bed_type + d_familykidfriendly + 
+                          f_room_type*f_property_type +  n_number_of_reviews*f_property_type +
+                          d_airconditioning*f_property_type + 
+                          d_cats*f_property_type + d_dogs*f_property_type +
+                          d_familykidfriendly*f_property_type,
+                   data = data_train_district,
+                   method = "lm", 
+                   trControl = train_control)
+                   #preProcess=c("center", "scale"))
+#model_1_district$results[["RMSE"]]
+
+```
+
+```{r}
+resamps <- resamples(list("model_3_london" = model_3_london,
+                          "model_3_district" = model_3_district))
+summary(resamps)
+
+```
+
+they are performing almost the same on test sets:
+
+```{r}
+#postResample(data_test_district$usd_price_day, predict(model_1_district, data_test_district))
+#postResample(data_test_london$usd_price_day, predict(model_1_london, data_test_london))
+test_prediction_district <- predict.train(model_3_district, newdata = data_test_district)
+
+test_prediction_london <- predict.train(model_3_london, newdata = data_test_london)
+
+cat('District RMSE: ', RMSE(test_prediction_district, data_test_district[["usd_price_day"]]),
+    'London RMSE: ',   RMSE(test_prediction_london, data_test_london[["usd_price_day"]]))
+
+
+```
+
+
+
+```{r}
+# Linear 4
+#-p_host_response_rate -n_review_scores_rating -n_reviews_per_month -n_days_since -d_washerdryer -d_freeparkingonstreet -d_paidparkingoffpremises
+
+set.seed(1234) 
+model_4_london <- train(usd_price_day ~ .,
+                          
+                   data = data_train_london, 
+                   method = "lm", 
+                   trControl = train_control)
+                   #preProcess=c("center", "scale"))
+#model_1_london$results[["RMSE"]]
+
+set.seed(1234)
+model_4_district <- train(usd_price_day ~ .,
+                   data = data_train_district,
+                   method = "lm", 
+                   trControl = train_control)
+                   #preProcess=c("center", "scale"))
+#model_1_district$results[["RMSE"]]
+
+```
+
+```{r}
+resamps <- resamples(list("model_4_london" = model_4_london,
+                          "model_4_district" = model_4_district))
+summary(resamps)
+
+```
+
+they are performing almost the same on test sets:
+
+```{r}
+#postResample(data_test_district$usd_price_day, predict(model_1_district, data_test_district))
+#postResample(data_test_london$usd_price_day, predict(model_1_london, data_test_london))
+test_prediction_district <- predict.train(model_4_district, newdata = data_test_district)
+
+test_prediction_london <- predict.train(model_4_london, newdata = data_test_london)
+
+cat('District RMSE: ', RMSE(test_prediction_district, data_test_district[["usd_price_day"]]),
+    'London RMSE: ',   RMSE(test_prediction_london, data_test_london[["usd_price_day"]]))
+
+
+```
+
+
+
 
 ############### Code From Machine Learning Class ##################################
 
@@ -758,7 +1138,6 @@ http://www.stat.wvu.edu/~jharner/courses/dsci503/docs/vuk.pdf
 A good example about calibration is discussed also in Nate Silver's book the Signal and Noise regarding weather forecasts being tweaked a bit on tv channels to predict more rain. It is called the 'wet bias'. They want to predict more rain than the evidence suggests, not to make people angry.
 
 Thank you!
-
 
 
 
